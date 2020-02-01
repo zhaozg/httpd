@@ -86,6 +86,7 @@ if test -z "$LUA_VERSION"; then
 
     CHECK_LUA_PATH([${x}], [include/lua-5.1], [lib/lua-5.1], [lua-5.1])
     CHECK_LUA_PATH([${x}], [include/lua5.1], [lib], [lua5.1])
+    CHECK_LUA_PATH([${x}], [include/luajit-2.1], [lib], [luajit-5.1])
     CHECK_LUA_PATH([${x}], [include/lua51], [lib/lua51], [lua])
   done
 fi
