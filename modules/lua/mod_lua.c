@@ -40,11 +40,6 @@
 #include <unistd.h>
 #endif
 
-/* getpid for Windows */
-#if APR_HAVE_PROCESS_H
-#include <process.h>
-#endif
-
 APR_IMPLEMENT_OPTIONAL_HOOK_RUN_ALL(ap_lua, AP_LUA, int, lua_open,
                                     (lua_State *L, apr_pool_t *p),
                                     (L, p), OK, DECLINED)
@@ -119,11 +114,11 @@ static void lua_open_callback(lua_State *L, apr_pool_t *p, void *ctx)
     ap_lua_load_apache2_lmodule(L);
     ap_lua_load_request_lmodule(L, p);
     ap_lua_load_config_lmodule(L);
+    ap_lua_run_lua_open(L, p);
 }
 
 static int lua_open_hook(lua_State *L, apr_pool_t *p)
 {
-    lua_open_callback(L, p, NULL);
     return OK;
 }
 
@@ -194,7 +189,7 @@ static ap_lua_vm_spec *create_vm_spec(apr_pool_t **lifecycle_pool,
     spec->codecache = (cfg->codecache == AP_LUA_CACHE_UNSET) ? AP_LUA_CACHE_STAT : cfg->codecache;
     spec->vm_min = cfg->vm_min ? cfg->vm_min : 1;
     spec->vm_max = cfg->vm_max ? cfg->vm_max : 1;
-    
+
     if (filename) {
         char *file;
         apr_filepath_merge(&file, server_cfg->root_path,
@@ -258,7 +253,7 @@ static const char* ap_lua_interpolate_string(apr_pool_t* pool, const char* strin
             y = ++x+1;
         }
     }
-    
+
     if (x-y > 0 && y > 0) {
         stringBetween = apr_pstrndup(pool, string+y, x-y);
         ret = apr_pstrcat(pool, ret, stringBetween, NULL);
@@ -341,12 +336,12 @@ static apr_status_t lua_setup_filter_ctx(ap_filter_t* f, request_rec* r, lua_fil
     ap_lua_vm_spec *spec;
     int n, rc, nres;
     lua_State *L;
-    lua_filter_ctx *ctx;    
+    lua_filter_ctx *ctx;
     ap_lua_server_cfg *server_cfg = ap_get_module_config(r->server->module_config,
                                                         &lua_module);
     const ap_lua_dir_cfg *cfg = ap_get_module_config(r->per_dir_config,
                                                     &lua_module);
-    
+
     ctx = apr_pcalloc(r->pool, sizeof(lua_filter_ctx));
     ctx->broken = 0;
     *c = ctx;
@@ -361,7 +356,9 @@ static apr_status_t lua_setup_filter_ctx(ap_filter_t* f, request_rec* r, lua_fil
         if (hook_spec == NULL) {
             continue;
         }
-        if (!strcasecmp(hook_spec->filter_name, f->frec->name)) {
+        if (!strcasecmp(hook_spec->filter_name, f->frec->name) ||
+           (!strncmp(f->frec->name, "BYTYPE:", 7) &&
+            !strcasecmp(hook_spec->filter_name, f->frec->name + 7))) {
             spec = create_vm_spec(&pool, r, cfg, server_cfg,
                                     hook_spec->file_name,
                                     NULL,
@@ -403,13 +400,13 @@ static apr_status_t lua_setup_filter_ctx(ap_filter_t* f, request_rec* r, lua_fil
             }
             ctx->L = L;
             ctx->spec = spec;
-            
-            /* If a Lua filter is interested in filtering a request, it must first do a yield, 
+
+            /* If a Lua filter is interested in filtering a request, it must first do a yield,
              * otherwise we'll assume that it's not interested and pretend we didn't find it.
              */
             rc = lua_resume(L, 1, &nres);
             if (rc == LUA_YIELD) {
-                if (f->frec->providers == NULL) { 
+                if (f->frec->providers == NULL) {
                     /* Not wired by mod_filter */
                     apr_table_unset(r->headers_out, "Content-Length");
                     apr_table_unset(r->headers_out, "Content-MD5");
@@ -435,7 +432,7 @@ static apr_status_t lua_output_filter_handle(ap_filter_t *f, apr_bucket_brigade 
     conn_rec *c = r->connection;
     apr_bucket *pbktIn;
     apr_status_t rv;
-    
+
     /* Set up the initial filter context and acquire the function.
      * The corresponding Lua function should yield here.
      */
@@ -449,7 +446,7 @@ static apr_status_t lua_output_filter_handle(ap_filter_t *f, apr_bucket_brigade 
             ap_remove_output_filter(f);
             return ap_pass_brigade(f->next,pbbIn);
         }
-        else { 
+        else {
             /* We've got a willing lua filter, setup and check for a prefix */
             size_t olen;
             apr_bucket *pbktOut;
@@ -458,7 +455,7 @@ static apr_status_t lua_output_filter_handle(ap_filter_t *f, apr_bucket_brigade 
             f->ctx = ctx;
             ctx->tmpBucket = apr_brigade_create(r->pool, c->bucket_alloc);
 
-            if (olen > 0) { 
+            if (olen > 0) {
                 pbktOut = apr_bucket_heap_create(output, olen, NULL, c->bucket_alloc);
                 APR_BRIGADE_INSERT_TAIL(ctx->tmpBucket, pbktOut);
                 rv = ap_pass_brigade(f->next, ctx->tmpBucket);
@@ -487,12 +484,14 @@ static apr_status_t lua_output_filter_handle(ap_filter_t *f, apr_bucket_brigade 
             /* Push the bucket onto the Lua stack as a global var */
             lua_pushlstring(L, data, len);
             lua_setglobal(L, "bucket");
-            
+
             /* If Lua yielded, it means we have something to pass on */
-            if (lua_resume(L, 0, &nres) == LUA_YIELD && nres == 1) {
+
+            lua_pushlstring(L, data, len);
+            if (lua_resume(L, 1, &nres) == LUA_YIELD && nres == 1) {
                 size_t olen;
                 const char* output = lua_tolstring(L, 1, &olen);
-                if (olen > 0) { 
+                if (olen > 0) {
                     pbktOut = apr_bucket_heap_create(output, olen, NULL,
                                             c->bucket_alloc);
                     APR_BRIGADE_INSERT_TAIL(ctx->tmpBucket, pbktOut);
@@ -515,7 +514,7 @@ static apr_status_t lua_output_filter_handle(ap_filter_t *f, apr_bucket_brigade 
                 return HTTP_INTERNAL_SERVER_ERROR;
             }
         }
-        /* If we've safely reached the end, do a final call to Lua to allow for any 
+        /* If we've safely reached the end, do a final call to Lua to allow for any
         finishing moves by the script, such as appending a tail. */
         if (APR_BUCKET_IS_EOS(APR_BRIGADE_LAST(pbbIn))) {
             apr_bucket *pbktEOS;
@@ -525,7 +524,7 @@ static apr_status_t lua_output_filter_handle(ap_filter_t *f, apr_bucket_brigade 
                 apr_bucket *pbktOut;
                 size_t olen;
                 const char* output = lua_tolstring(L, 1, &olen);
-                if (olen > 0) { 
+                if (olen > 0) {
                     pbktOut = apr_bucket_heap_create(output, olen, NULL,
                             c->bucket_alloc);
                     APR_BRIGADE_INSERT_TAIL(ctx->tmpBucket, pbktOut);
@@ -543,7 +542,7 @@ static apr_status_t lua_output_filter_handle(ap_filter_t *f, apr_bucket_brigade 
     }
     /* Clean up */
     apr_brigade_cleanup(pbbIn);
-    return APR_SUCCESS;    
+    return APR_SUCCESS;
 }
 
 
@@ -552,7 +551,7 @@ static apr_status_t lua_input_filter_handle(ap_filter_t *f,
                                        apr_bucket_brigade *pbbOut,
                                        ap_input_mode_t eMode,
                                        apr_read_type_e eBlock,
-                                       apr_off_t nBytes) 
+                                       apr_off_t nBytes)
 {
     request_rec *r = f->r;
     int rc, lastCall = 0, nres;
@@ -560,7 +559,7 @@ static apr_status_t lua_input_filter_handle(ap_filter_t *f,
     lua_filter_ctx* ctx;
     conn_rec *c = r->connection;
     apr_status_t ret;
-    
+
     /* Set up the initial filter context and acquire the function.
      * The corresponding Lua function should yield here.
      */
@@ -569,7 +568,7 @@ static apr_status_t lua_input_filter_handle(ap_filter_t *f,
         f->ctx = ctx;
         if (rc == APR_EGENERAL) {
             ctx->broken = 1;
-            ap_remove_input_filter(f); 
+            ap_remove_input_filter(f);
             return HTTP_INTERNAL_SERVER_ERROR;
         }
         if (rc == APR_ENOENT ) {
@@ -586,13 +585,13 @@ static apr_status_t lua_input_filter_handle(ap_filter_t *f,
     if (ctx->broken) {
         return ap_get_brigade(f->next, pbbOut, eMode, eBlock, nBytes);
     }
-    
+
     if (APR_BRIGADE_EMPTY(ctx->tmpBucket)) {
         ret = ap_get_brigade(f->next, ctx->tmpBucket, eMode, eBlock, nBytes);
         if (eMode == AP_MODE_EATCRLF || ret != APR_SUCCESS)
             return ret;
     }
-    
+
     /* While the Lua function is still yielding, pass buckets to the coroutine */
     if (!ctx->broken) {
         lastCall = 0;
@@ -601,7 +600,7 @@ static apr_status_t lua_input_filter_handle(ap_filter_t *f,
             apr_bucket *pbktOut;
             const char *data;
             apr_size_t len;
-            
+
             if (APR_BUCKET_IS_EOS(pbktIn)) {
                 APR_BUCKET_REMOVE(pbktIn);
                 break;
@@ -616,9 +615,10 @@ static apr_status_t lua_input_filter_handle(ap_filter_t *f,
             lastCall++;
             lua_pushlstring(L, data, len);
             lua_setglobal(L, "bucket");
-            
+
             /* If Lua yielded, it means we have something to pass on */
-            if (lua_resume(L, 0, &nres) == LUA_YIELD && nres == 1) {
+            lua_pushlstring(L, data, len);
+            if (lua_resume(L, 1, &nres) == LUA_YIELD && nres == 1) {
                 size_t olen;
                 const char* output = lua_tolstring(L, 1, &olen);
                 pbktOut = apr_bucket_heap_create(output, olen, 0, c->bucket_alloc);
@@ -629,12 +629,12 @@ static apr_status_t lua_input_filter_handle(ap_filter_t *f,
             else {
                 ctx->broken = 1;
                 ap_lua_release_state(L, ctx->spec, r);
-                ap_remove_input_filter(f); 
+                ap_remove_input_filter(f);
                 apr_bucket_delete(pbktIn);
                 return HTTP_INTERNAL_SERVER_ERROR;
             }
         }
-        /* If we've safely reached the end, do a final call to Lua to allow for any 
+        /* If we've safely reached the end, do a final call to Lua to allow for any
         finishing moves by the script, such as appending a tail. */
         if (lastCall == 0) {
             apr_bucket *pbktEOS = apr_bucket_eos_create(c->bucket_alloc);
@@ -649,6 +649,7 @@ static apr_status_t lua_input_filter_handle(ap_filter_t *f,
             }
             APR_BRIGADE_INSERT_TAIL(pbbOut,pbktEOS);
             ap_lua_release_state(L, ctx->spec, r);
+            ap_remove_input_filter(f);
         }
     }
     return APR_SUCCESS;
@@ -727,10 +728,10 @@ static int lua_request_rec_hook_harness(request_rec *r, const char *name, int ap
             rc = DECLINED;
             if (lua_isnumber(L, -1)) {
                 rc = lua_tointeger(L, -1);
-                ap_log_rerror(APLOG_MARK, APLOG_TRACE4, 0, r, "Lua hook %s:%s for phase %s returned %d", 
+                ap_log_rerror(APLOG_MARK, APLOG_TRACE4, 0, r, "Lua hook %s:%s for phase %s returned %d",
                               hook_spec->file_name, hook_spec->function_name, name, rc);
             }
-            else { 
+            else {
                 ap_log_rerror(APLOG_MARK, APLOG_CRIT, 0, r, APLOGNO(03017)
                               "Lua hook %s:%s for phase %s did not return a numeric value",
                               hook_spec->file_name, hook_spec->function_name, name);
@@ -850,7 +851,7 @@ static int lua_map_handler(request_rec *r)
             if (lua_isnumber(L, -1)) {
                 rc = lua_tointeger(L, -1);
             }
-            else { 
+            else {
                 ap_log_rerror(APLOG_MARK, APLOG_WARNING, 0, r, APLOGNO(02483)
                               "lua: Lua handler %s in %s did not return a value, assuming apache2.OK",
                               function_name,
@@ -1014,7 +1015,7 @@ static const char *register_named_block_function_hook(const char *name,
 
     line = apr_pstrndup(cmd->temp_pool, line, endp - line);
 
-    if (line[0]) { 
+    if (line[0]) {
         const char *word;
         word = ap_getword_conf(cmd->temp_pool, &line);
         if (*word) {
@@ -1022,13 +1023,13 @@ static const char *register_named_block_function_hook(const char *name,
         }
         word = ap_getword_conf(cmd->temp_pool, &line);
         if (*word) {
-            if (!strcasecmp("early", word)) { 
+            if (!strcasecmp("early", word)) {
                 when = AP_LUA_HOOK_FIRST;
             }
             else if (!strcasecmp("late", word)) {
                 when = AP_LUA_HOOK_LAST;
             }
-            else { 
+            else {
                 return apr_pstrcat(cmd->pool, cmd->cmd->name,
                                    "> 2nd argument must be 'early' or 'late'", NULL);
             }
@@ -1166,7 +1167,7 @@ static const char *register_filter_function_hook(const char *filter,
 {
     ap_lua_filter_handler_spec *spec;
     ap_lua_dir_cfg *cfg = (ap_lua_dir_cfg *) _cfg;
-   
+
     spec = apr_pcalloc(cmd->pool, sizeof(ap_lua_filter_handler_spec));
     spec->file_name = apr_pstrdup(cmd->pool, file);
     spec->function_name = apr_pstrdup(cmd->pool, function);
@@ -1305,15 +1306,15 @@ static const char *register_translate_name_hook(cmd_parms *cmd, void *_cfg,
     if (err) {
         return err;
     }
-    
-    if (when) { 
-        if (!strcasecmp(when, "early")) { 
+
+    if (when) {
+        if (!strcasecmp(when, "early")) {
             apr_hook_when = AP_LUA_HOOK_FIRST;
-        } 
-        else if (!strcasecmp(when, "late")) { 
+        }
+        else if (!strcasecmp(when, "late")) {
             apr_hook_when = AP_LUA_HOOK_LAST;
-        } 
-        else { 
+        }
+        else {
             return "Third argument must be 'early' or 'late'";
         }
     }
@@ -1532,7 +1533,7 @@ static const char *register_quick_block(cmd_parms *cmd, void *_cfg,
 
 
 
-static const char *register_package_helper(cmd_parms *cmd, 
+static const char *register_package_helper(cmd_parms *cmd,
                                            const char *arg,
                                            apr_array_header_t *dir_array)
 {
@@ -1542,10 +1543,10 @@ static const char *register_package_helper(cmd_parms *cmd,
         ap_get_module_config(cmd->server->module_config, &lua_module);
 
     char *fixed_filename;
-    rv = apr_filepath_merge(&fixed_filename, 
-                            server_cfg->root_path, 
+    rv = apr_filepath_merge(&fixed_filename,
+                            server_cfg->root_path,
                             arg,
-                            APR_FILEPATH_NOTRELATIVE, 
+                            APR_FILEPATH_NOTRELATIVE,
                             cmd->pool);
 
     if (rv != APR_SUCCESS) {
@@ -1574,7 +1575,7 @@ static const char *register_package_dir(cmd_parms *cmd, void *_cfg,
  * Called for config directive which looks like
  * LuaPackageCPath /lua/package/path/mapped/thing/like/this/?.so
  */
-static const char *register_package_cdir(cmd_parms *cmd, 
+static const char *register_package_cdir(cmd_parms *cmd,
                                          void *_cfg,
                                          const char *arg)
 {
@@ -1583,12 +1584,12 @@ static const char *register_package_cdir(cmd_parms *cmd,
     return register_package_helper(cmd, arg, cfg->package_cpaths);
 }
 
-static const char *register_lua_inherit(cmd_parms *cmd, 
+static const char *register_lua_inherit(cmd_parms *cmd,
                                       void *_cfg,
                                       const char *arg)
 {
     ap_lua_dir_cfg *cfg = (ap_lua_dir_cfg *) _cfg;
-    
+
     if (strcasecmp("none", arg) == 0) {
         cfg->inherit = AP_LUA_INHERIT_NONE;
     }
@@ -1598,20 +1599,20 @@ static const char *register_lua_inherit(cmd_parms *cmd,
     else if (strcasecmp("parent-last", arg) == 0) {
         cfg->inherit = AP_LUA_INHERIT_PARENT_LAST;
     }
-    else { 
+    else {
         return apr_psprintf(cmd->pool,
                             "LuaInherit type of '%s' not recognized, valid "
-                            "options are 'none', 'parent-first', and 'parent-last'", 
+                            "options are 'none', 'parent-first', and 'parent-last'",
                             arg);
     }
     return NULL;
 }
-static const char *register_lua_codecache(cmd_parms *cmd, 
+static const char *register_lua_codecache(cmd_parms *cmd,
                                       void *_cfg,
                                       const char *arg)
 {
     ap_lua_dir_cfg *cfg = (ap_lua_dir_cfg *) _cfg;
-    
+
     if (strcasecmp("never", arg) == 0) {
         cfg->codecache = AP_LUA_CACHE_NEVER;
     }
@@ -1621,17 +1622,17 @@ static const char *register_lua_codecache(cmd_parms *cmd,
     else if (strcasecmp("forever", arg) == 0) {
         cfg->codecache = AP_LUA_CACHE_FOREVER;
     }
-    else { 
+    else {
         return apr_psprintf(cmd->pool,
                             "LuaCodeCache type of '%s' not recognized, valid "
-                            "options are 'never', 'stat', and 'forever'", 
+                            "options are 'never', 'stat', and 'forever'",
                             arg);
     }
     return NULL;
 }
-static const char *register_lua_scope(cmd_parms *cmd, 
+static const char *register_lua_scope(cmd_parms *cmd,
                                       void *_cfg,
-                                      const char *scope, 
+                                      const char *scope,
                                       const char *min,
                                       const char *max)
 {
@@ -1932,7 +1933,7 @@ static const command_rec lua_commands[] = {
     AP_INIT_TAKE2("LuaHookInsertFilter", register_insert_filter_hook, NULL,
                   OR_ALL,
                   "Provide a hook for the insert_filter phase of request processing"),
-    
+
     AP_INIT_TAKE2("LuaHookLog", register_log_transaction_hook, NULL,
                   OR_ALL,
                   "Provide a hook for the logging phase of request processing"),
@@ -1941,11 +1942,11 @@ static const command_rec lua_commands[] = {
                     "One of once, request, conn, server -- default is once"),
 
     AP_INIT_TAKE1("LuaInherit", register_lua_inherit, NULL, OR_ALL,
-     "Controls how Lua scripts in parent contexts are merged with the current " 
+     "Controls how Lua scripts in parent contexts are merged with the current "
      " context: none|parent-last|parent-first (default: parent-first) "),
-    
+
     AP_INIT_TAKE1("LuaCodeCache", register_lua_codecache, NULL, OR_ALL,
-     "Controls the behavior of the in-memory code cache " 
+     "Controls the behavior of the in-memory code cache "
      " context: stat|forever|never (default: stat) "),
 
     AP_INIT_TAKE2("LuaQuickHandler", register_quick_hook, NULL, OR_ALL,
@@ -2041,7 +2042,7 @@ static int lua_post_config(apr_pool_t *pconf, apr_pool_t *plog,
         lua_ivm_shmfile = ap_runtime_dir_relative(pconf, DEFAULT_LUA_SHMFILE);
 
         apr_shm_remove(lua_ivm_shmfile, pconf);
-        
+
         rs = apr_shm_create(&lua_ivm_shm, sizeof pool, lua_ivm_shmfile, pconf);
     }
     if (rs != APR_SUCCESS) {
@@ -2083,25 +2084,25 @@ static void *merge_dir_config(apr_pool_t *p, void *basev, void *overridesv)
     a->vm_scope = (overrides->vm_scope == AP_LUA_SCOPE_UNSET) ? base->vm_scope: overrides->vm_scope;
     a->inherit = (overrides->inherit == AP_LUA_INHERIT_UNSET) ? base->inherit : overrides->inherit;
     a->codecache = (overrides->codecache == AP_LUA_CACHE_UNSET) ? base->codecache : overrides->codecache;
-    
+
     a->vm_min = (overrides->vm_min == 0) ? base->vm_min : overrides->vm_min;
     a->vm_max = (overrides->vm_max == 0) ? base->vm_max : overrides->vm_max;
 
-    if (a->inherit == AP_LUA_INHERIT_UNSET || a->inherit == AP_LUA_INHERIT_PARENT_FIRST) { 
+    if (a->inherit == AP_LUA_INHERIT_UNSET || a->inherit == AP_LUA_INHERIT_PARENT_FIRST) {
         a->package_paths = apr_array_append(p, base->package_paths, overrides->package_paths);
         a->package_cpaths = apr_array_append(p, base->package_cpaths, overrides->package_cpaths);
         a->mapped_handlers = apr_array_append(p, base->mapped_handlers, overrides->mapped_handlers);
         a->mapped_filters = apr_array_append(p, base->mapped_filters, overrides->mapped_filters);
         a->hooks = apr_hash_merge(p, overrides->hooks, base->hooks, overlay_hook_specs, NULL);
     }
-    else if (a->inherit == AP_LUA_INHERIT_PARENT_LAST) { 
+    else if (a->inherit == AP_LUA_INHERIT_PARENT_LAST) {
         a->package_paths = apr_array_append(p, overrides->package_paths, base->package_paths);
         a->package_cpaths = apr_array_append(p, overrides->package_cpaths, base->package_cpaths);
         a->mapped_handlers = apr_array_append(p, overrides->mapped_handlers, base->mapped_handlers);
         a->mapped_filters = apr_array_append(p, overrides->mapped_filters, base->mapped_filters);
         a->hooks = apr_hash_merge(p, base->hooks, overrides->hooks, overlay_hook_specs, NULL);
     }
-    else { 
+    else {
         a->package_paths = overrides->package_paths;
         a->package_cpaths = overrides->package_cpaths;
         a->mapped_handlers= overrides->mapped_handlers;
@@ -2134,7 +2135,7 @@ static void lua_register_hooks(apr_pool_t *p)
     ap_hook_map_to_storage(lua_map_to_storage_harness, NULL, NULL,
                            APR_HOOK_MIDDLE);
 
-/*  XXX: Does not work :(  
+/*  XXX: Does not work :(
  *  ap_hook_check_user_id(lua_check_user_id_harness_first, NULL, NULL,
                           AP_LUA_HOOK_FIRST);
  */
@@ -2173,7 +2174,7 @@ static void lua_register_hooks(apr_pool_t *p)
     APR_OPTIONAL_HOOK(ap_lua, lua_request, lua_request_hook, NULL, NULL,
                       APR_HOOK_REALLY_FIRST);
     ap_hook_handler(lua_map_handler, NULL, NULL, AP_LUA_HOOK_FIRST);
-    
+
     /* Hook this right before FallbackResource kicks in */
     ap_hook_fixups(lua_map_handler_fixups, NULL, NULL, AP_LUA_HOOK_LAST-2);
 #if APR_HAS_THREADS
@@ -2181,7 +2182,7 @@ static void lua_register_hooks(apr_pool_t *p)
 #endif
     /* providers */
     lua_authz_providers = apr_hash_make(p);
-    
+
     /* Logging catcher */
     ap_hook_log_transaction(lua_log_transaction_harness,NULL,NULL,
                             APR_HOOK_FIRST);
