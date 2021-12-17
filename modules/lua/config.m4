@@ -70,6 +70,8 @@ if test -z "$LUA_VERSION"; then
   AC_CHECK_LIB(m, pow, lib_m="-lm")
   AC_CHECK_LIB(m, sqrt, lib_m="-lm")
   for x in $test_paths ; do
+    CHECK_LUA_PATH([${x}], [include/luajit-2.1], [lib], [luajit-5.1])
+
     CHECK_LUA_PATH([${x}], [include/lua-5.4], [lib/lua-5.4], [lua-5.4])
     CHECK_LUA_PATH([${x}], [include/lua5.4], [lib], [lua5.4])
     CHECK_LUA_PATH([${x}], [include/lua54], [lib/lua54], [lua])
@@ -86,7 +88,6 @@ if test -z "$LUA_VERSION"; then
 
     CHECK_LUA_PATH([${x}], [include/lua-5.1], [lib/lua-5.1], [lua-5.1])
     CHECK_LUA_PATH([${x}], [include/lua5.1], [lib], [lua5.1])
-    CHECK_LUA_PATH([${x}], [include/luajit-2.1], [lib], [luajit-5.1])
     CHECK_LUA_PATH([${x}], [include/lua51], [lib/lua51], [lua])
   done
 fi
