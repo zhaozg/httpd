@@ -108,13 +108,17 @@ static void report_lua_error(lua_State *L, request_rec *r)
                   lua_response);
 }
 
-static void lua_open_callback(lua_State *L, apr_pool_t *p, void *ctx)
+static int lua_open_callback(lua_State *L)
 {
+    apr_pool_t *p = lua_touserdata(L, 1);
+    lua_pop(L, 1);
+
     ap_lua_init(L, p);
     ap_lua_load_apache2_lmodule(L);
     ap_lua_load_request_lmodule(L, p);
     ap_lua_load_config_lmodule(L);
     ap_lua_run_lua_open(L, p);
+    return 0;
 }
 
 static int lua_open_hook(lua_State *L, apr_pool_t *p)

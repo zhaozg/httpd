@@ -50,8 +50,6 @@
 #define AP_LUA_FILTER_INPUT        1
 #define AP_LUA_FILTER_OUTPUT       2
 
-typedef void (*ap_lua_state_open_callback) (lua_State *L, apr_pool_t *p,
-                                             void *ctx);
 /**
  * Specification for a lua virtual machine
  */
@@ -69,7 +67,7 @@ typedef struct
     unsigned int vm_min;
     unsigned int vm_max;
 
-    ap_lua_state_open_callback cb;
+    lua_CFunction cb;
     void* cb_arg;
 
     /* pool to use for lifecycle if APL_SCOPE_ONCE is set, otherwise unused */

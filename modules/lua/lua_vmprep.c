@@ -339,6 +339,7 @@ static apr_status_t vm_construct(lua_State **vm, void *params, apr_pool_t *lifec
     L = luaL_newstate();
 #ifdef AP_ENABLE_LUAJIT
     luaopen_jit(L);
+    lua_settop(L, 0);
 #endif
     luaL_openlibs(L);
     if (spec->package_paths) {
@@ -357,7 +358,15 @@ static apr_status_t vm_construct(lua_State **vm, void *params, apr_pool_t *lifec
     }
 
     if (spec->cb) {
-        spec->cb(L, lifecycle_pool, spec->cb_arg);
+        int rc = lua_cpcall(L, spec->cb, lifecycle_pool);
+        if (rc != LUA_OK)
+        {
+            ap_log_perror(APLOG_MARK, APLOG_ERR, 0, lifecycle_pool, APLOGNO(01483)
+                          "Error prepare lua_State for file %s: %s", spec->file,
+                          rc == LUA_ERRMEM ? "memory allocation error"
+                                           : lua_tostring(L, -1));
+            return APR_EBADF;
+        }
     }
 
 
@@ -385,9 +394,11 @@ static apr_status_t vm_construct(lua_State **vm, void *params, apr_pool_t *lifec
         }
     }
 
+/* FIXME: bugs
 #ifdef AP_ENABLE_LUAJIT
     loadjitmodule(L, lifecycle_pool);
 #endif
+*/
     lua_pushlightuserdata(L, lifecycle_pool);
     lua_setfield(L, LUA_REGISTRYINDEX, "Apache2.Wombat.pool");
     *vm = L;
