@@ -485,10 +485,6 @@ static apr_status_t lua_output_filter_handle(ap_filter_t *f, apr_bucket_brigade 
             /* read the bucket */
             apr_bucket_read(pbktIn,&data,&len,APR_BLOCK_READ);
 
-            /* Push the bucket onto the Lua stack as a global var */
-            lua_pushlstring(L, data, len);
-            lua_setglobal(L, "bucket");
-
             /* If Lua yielded, it means we have something to pass on */
 
             lua_pushlstring(L, data, len);
@@ -522,8 +518,6 @@ static apr_status_t lua_output_filter_handle(ap_filter_t *f, apr_bucket_brigade 
         finishing moves by the script, such as appending a tail. */
         if (APR_BUCKET_IS_EOS(APR_BRIGADE_LAST(pbbIn))) {
             apr_bucket *pbktEOS;
-            lua_pushnil(L);
-            lua_setglobal(L, "bucket");
             if (lua_resume(L, 0, &nres) == LUA_YIELD && nres == 1) {
                 apr_bucket *pbktOut;
                 size_t olen;
@@ -615,10 +609,7 @@ static apr_status_t lua_input_filter_handle(ap_filter_t *f,
             if (ret != APR_SUCCESS)
                 return ret;
 
-            /* Push the bucket onto the Lua stack as a global var */
             lastCall++;
-            lua_pushlstring(L, data, len);
-            lua_setglobal(L, "bucket");
 
             /* If Lua yielded, it means we have something to pass on */
             lua_pushlstring(L, data, len);
@@ -642,8 +633,6 @@ static apr_status_t lua_input_filter_handle(ap_filter_t *f,
         finishing moves by the script, such as appending a tail. */
         if (lastCall == 0) {
             apr_bucket *pbktEOS = apr_bucket_eos_create(c->bucket_alloc);
-            lua_pushnil(L);
-            lua_setglobal(L, "bucket");
             if (lua_resume(L, 0, &nres) == LUA_YIELD && nres == 1) {
                 apr_bucket *pbktOut;
                 size_t olen;
