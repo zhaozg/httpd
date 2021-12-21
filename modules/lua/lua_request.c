@@ -532,7 +532,7 @@ static int req_add_output_filter(lua_State *L)
     const char *name = luaL_checkstring(L, 2);
     ap_log_rerror(APLOG_MARK, APLOG_DEBUG, 0, r, APLOGNO(01485) "adding output filter %s",
                   name);
-    ap_add_output_filter(name, L, r, r->connection);
+    ap_add_output_filter(name, NULL, r, r->connection);
     return 0;
 }
 

@@ -383,7 +383,7 @@ static apr_status_t vm_construct(lua_State **vm, void *params, apr_pool_t *lifec
             ap_log_perror(APLOG_MARK, APLOG_ERR, 0, lifecycle_pool, APLOGNO(01482)
                           "Error loading %s: %s", spec->file,
                           rc == LUA_ERRMEM ? "memory allocation error"
-                                           : lua_tostring(L, 0));
+                                           : lua_tostring(L, -1));
             return APR_EBADF;
         }
         if ( lua_pcall(L, 0, LUA_MULTRET, 0) == LUA_ERRRUN ) {
